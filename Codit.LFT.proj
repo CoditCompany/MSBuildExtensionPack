@@ -1,0 +1,79 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<Import Project="$(MSBuildExtensionsPath)\ExtensionPack\4.0\MSBuild.ExtensionPack.tasks" />
+	<PropertyGroup>
+		<Application>Codit.LFT</Application>
+		<Version>1.0.0.0</Version>
+		<ReleasePath>Z:\_Releases\$(Application)\$(Version)</ReleasePath>
+		<DevMachine>$(COMPUTERNAME)</DevMachine>
+		<TestMachine>$(COMPUTERNAME)</TestMachine>
+		<TestDatabaseServer>$(COMPUTERNAME)</TestDatabaseServer>
+	</PropertyGroup>
+	<Target Name="Default">
+		<CallTarget Targets="Development;Test" />
+	</Target>
+	<Target Name="Development">
+		<Message Text="1. Cleanup" Importance="High" />
+		<MSBuild.ExtensionPack.FileSystem.Folder TaskAction="RemoveContent" Path="$(APPDATA)\Microsoft\BizTalk Server\Deployment" />
+		<MSBuild.ExtensionPack.FileSystem.Folder TaskAction="RemoveContent" Path="$(ReleasePath)" Condition="Exists($(ReleasePath))" />
+		<Message Text="2. Building source" Importance="High" />
+		<MSBuild Projects="$(Application).sln">
+			<Output TaskParameter="TargetOutputs" ItemName="Assemblies"/>
+		</MSBuild>
+		<Message Text="3. Deploying Application" Importance="High" />
+		<Message Text="3.1. Stopping host instances" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Get">
+			<Output TaskParameter="HostInstances" ItemName="His" />
+		</MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance>
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Stop" HostName="%(His.Identity)" Condition="%(His.ServiceState) == 4" />
+		<Message Text="3.2. Creating application" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="CheckExists" Application="$(Application)" MachineName="$(DevMachine)">
+			<Output TaskParameter="Exists" PropertyName="ApplicationExists" />
+		</MSBuild.ExtensionPack.BizTalk.BizTalkApplication>
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="StopAll" Applications="$(Application)" MachineName="$(DevMachine)" Condition="$(ApplicationExists)" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="Create" Applications="$(Application)" MachineName="$(DevMachine)" Condition="!$(ApplicationExists)" />
+		<Message Text="3.3. Adding resources" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkAssembly TaskAction="Add" Application="$(Application)" Assemblies="@(Assemblies)" MachineName="$(DevMachine)" GacOnMsiFileImport="false" Force="true" GacOnMsiFileInstall="true" />	
+		<Message Text="3.4. Importing bindings" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="ImportBindings" Application="$(Application)" MachineName="$(DevMachine)" BindingFile=".\Bindings\DEV\$(Application).xml" />
+		<Message Text="3.5. Starting host instances" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Start" HostName="%(His.Identity)" Condition="%(His.ServiceState) == 4" />
+		<Message Text="3.6. Starting application" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="StartAll" Applications="$(Application)" MachineName="$(DevMachine)" />
+		<Message Text="4. Create Release Package" Importance="High" />
+		<Message Text="4.1. Exporting MSI" Importance="High" />
+		<MSBuild.ExtensionPack.Framework.Assembly TaskAction="GetInfo" NetAssembly="%(Assemblies.Identity)"> 
+			<Output TaskParameter="OutputItems" ItemName="AssembliesToExport" /> 
+		</MSBuild.ExtensionPack.Framework.Assembly> 
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="ExportToMsi" Application="$(Application)" Resources="@(AssembliesToExport->'%(FullName)')" MsiPath="$(ReleasePath)\$(Application).msi" MachineName="$(DevMachine)" />
+		<Message Text="4.2. Copying bindings" Importance="High" />
+		<MSBuild.ExtensionPack.FileSystem.RoboCopy Source=".\Bindings\DEV" Destination="$(ReleasePath)\DEV" Files="*.xml" Options="/z" />
+	</Target>
+	<Target Name="Test">
+		<Message Text="1. Cleanup" Importance="High" />
+		<MSBuild.ExtensionPack.FileSystem.Folder TaskAction="RemoveContent" Path="$(APPDATA)\Microsoft\BizTalk Server\Deployment" />
+		<MSBuild.ExtensionPack.FileSystem.Folder TaskACtion="RemoveContent" Path="$(ReleasePath)\TEST" Condition="Exists('$(ReleasePath)\TEST')" />
+		<Message Text="2. Create Release package" Importance="High" />
+		<MSBuild.ExtensionPack.FileSystem.RoboCopy Source=".\Bindings\TEST" Destination="$(ReleasePath)\TEST" Files="*.xml" Options="/z" />
+		<Message Text="3. Install on test" Importance="High" />
+		<Message Text="3.1. Create application" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="CheckExists" Application="$(Application)" MachineName="$(TestMachine)" DatabaseServer="$(TestDatabaseServer)" >
+			<Output TaskParameter="Exists" PropertyName="ApplicationExists" />
+		</MSBuild.ExtensionPack.BizTalk.BizTalkApplication>
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="StopAll" Applications="$(Application)" MachineName="$(TestMachine)" Condition="$(ApplicationExists)" DatabaseServer="$(TestDatabaseServer)"/>
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="Create" Applications="$(Application)" MachineName="$(TestMachine)" Condition="!$(ApplicationExists)" DatabaseServer="$(TestDatabaseServer)" />
+		<Message Text="3.2. Importing MSI" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="ImportFromMsi" Application="$(Application)" MachineName="$(TestMachine)" MsiPath="$(ReleasePath)\$(Application).msi" Overwrite="True" DatabaseServer="$(TestDatabaseServer)" />
+		<Message Text="3.3. Installing MSI" Importance="High" />
+		<Exec Command="psexec \\$(TestMachine) msiexec /i $(ReleasePath)\$(Application).msi /quiet" />
+		<Message Text="3.4. Importing bindings" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="ImportBindings" Application="$(Application)" MachineName="$(TestMachine)" BindingFile="$(ReleasePath)\TEST\$(Application).xml" DatabaseServer="$(TestDatabaseServer)" />
+		<Message Text="3.5. Restarting Host Instances" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Get" MachineName="$(TestMachine)">
+			<Output TaskParameter="HostInstances" ItemName="His" />
+		</MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance>
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Stop" MachineName="$(TestMachine)" HostName="%(His.Identity)" Condition="%(His.ServiceState) == 4" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkHostInstance TaskAction="Start" MachineName="$(TestMachine)" HostName="%(His.Identity)" Condition="%(His.ServiceState) == 4" />
+		<Message Text="3.6. Starting application" Importance="High" />
+		<MSBuild.ExtensionPack.BizTalk.BizTalkApplication TaskAction="StartAll" Applications="$(Application)" MachineName="$(TestMachine)" DatabaseServer="$(TestDatabaseServer)" />
+	</Target>
+</Project>
